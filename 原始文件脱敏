@@ -1,0 +1,93 @@
+import pandas as pd
+import re
+import hashlib
+from datetime import datetime
+
+# ---------- 1. 配置 ----------
+INPUT_CSV = "fake_emr_50000.csv"      # 原始文件
+OUTPUT_CSV = "fake_emr_50000_deid.csv" # 脱敏后文件
+SALT = "fed_learning_salt_2025"       # 用于哈希 patient_id 的盐值
+
+# 年龄分桶边界（左闭右闭）
+AGE_BINS = [0, 18, 30, 40, 50, 60, 70, 80, 90, 120]
+AGE_LABELS = ["0-17", "18-29", "30-39", "40-49", "50-59", "60-69", "70-79", "80-89", "90+"]
+
+# ---------- 2. 辅助函数 ----------
+def hash_id(pid: str) -> str:
+    """对 patient_id 进行不可逆哈希，同一盐值保证跨表一致性"""
+    return hashlib.sha256(f"{SALT}_{pid}".encode()).hexdigest()[:16]
+
+def age_to_group(age: int) -> str:
+    """年龄映射到年龄段"""
+    if pd.isna(age):
+        return "unknown"
+    for i in range(len(AGE_BINS)-1):
+        if AGE_BINS[i] <= age <= AGE_BINS[i+1]:
+            return AGE_LABELS[i]
+    return "90+"
+
+def generalize_visit_time(ts: str) -> str:
+    """将 '2026-01-23 02:07:54' 泛化为 '2026-01' """
+    try:
+        dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        return dt.strftime("%Y-%m")
+    except:
+        return "unknown"
+
+def text_deidentify(text: str) -> str:
+    """对自由文本进行脱敏：替换姓名、医院名、医生名、具体日期等"""
+    if not isinstance(text, str):
+        return text
+    # 1. 替换中文姓名（简单规则：2-4个汉字，且前后无字母数字）
+    text = re.sub(r'(?<![a-zA-Z0-9\u4e00-\u9fa5])[\u4e00-\u9fa5]{2,4}(?![a-zA-Z0-9\u4e00-\u9fa5])', '[姓名]', text)
+    # 2. 替换医院名（常见后缀）
+    text = re.sub(r'[\u4e00-\u9fa5]+(?:医院|社区卫生中心|区人民医院|市立医院|卫生院)', '[医院]', text)
+    # 3. 替换医生名（“XX医生”）
+    text = re.sub(r'[\u4e00-\u9fa5]{2,4}医生', '[医生]', text)
+    # 4. 替换具体日期（2025-04-10 格式）
+    text = re.sub(r'\d{4}-\d{2}-\d{2}', '[日期]', text)
+    # 5. 替换手机号（1开头的11位数字）
+    text = re.sub(r'1[3-9]\d{9}', '[手机号]', text)
+    # 6. 替换身份证号（18或15位）
+    text = re.sub(r'\d{17}[\dXx]|\d{15}', '[身份证]', text)
+    return text
+
+# ---------- 3. 读取数据 ----------
+df = pd.read_csv(INPUT_CSV, dtype=str)  # 全部读为字符串，避免数值自动转换
+
+# ---------- 4. 删除直接标识符 ----------
+cols_to_drop = ['name', 'id_card', 'phone']
+df.drop(columns=[c for c in cols_to_drop if c in df.columns], inplace=True)
+
+# ---------- 5. 脱敏处理 ----------
+# 5.1 patient_id 哈希化
+if 'patient_id' in df.columns:
+    df['patient_id'] = df['patient_id'].apply(hash_id)
+
+# 5.2 年龄分桶
+if 'age' in df.columns:
+    df['age'] = pd.to_numeric(df['age'], errors='coerce')
+    df['age_group'] = df['age'].apply(age_to_group)
+    df.drop(columns=['age'], inplace=True)   # 删除原始年龄
+
+# 5.3 就诊时间泛化
+if 'visit_time' in df.columns:
+    df['visit_month'] = df['visit_time'].apply(generalize_visit_time)
+    df.drop(columns=['visit_time'], inplace=True)
+
+# 5.4 文本字段脱敏
+text_cols = ['chief_complaint', 'present_illness', 'past_history',
+             'physical_exam', 'exams', 'treatment']
+for col in text_cols:
+    if col in df.columns:
+        df[col] = df[col].apply(text_deidentify)
+
+# 5.5 diagnosis 中可能含有人名/医院名（如“XX医院诊断”），也进行脱敏
+if 'diagnosis' in df.columns:
+    df['diagnosis'] = df['diagnosis'].apply(text_deidentify)
+
+# ---------- 6. 输出处理后的数据 ----------
+df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+print(f"处理完成！脱敏后文件已保存至: {OUTPUT_CSV}")
+print(f"原始列数: {len(df.columns)+len(cols_to_drop)} -> 处理后列数: {len(df.columns)}")
+print("处理后的列:", list(df.columns))
