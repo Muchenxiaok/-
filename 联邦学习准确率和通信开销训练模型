@@ -1,0 +1,157 @@
+import pandas as pd
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+import re
+import warnings
+warnings.filterwarnings('ignore')
+
+def load_and_preprocess(data_path, max_features=300):
+    df = pd.read_csv(data_path)
+    print("原始数据形状:", df.shape)
+
+    # 症状特征 (15维)
+    symptoms = ['咳嗽', '发热', '胸痛', '胸闷', '头痛', '头晕', '腹痛', '腹泻',
+                '恶心', '呕吐', '关节痛', '乏力', '心悸', '气短', '喘息']
+    def extract_symptoms(row):
+        text = (row['chief_complaint'] + row['present_illness']).lower()
+        return [int(sym in text) for sym in symptoms]
+    symptom_arr = np.array([extract_symptoms(row) for _, row in df.iterrows()])
+
+    # 文本TF-IDF
+    text_fields = ['chief_complaint', 'present_illness', 'physical_exam', 'exams']
+    df['text'] = df[text_fields].fillna('').agg(' '.join, axis=1)
+    vectorizer = TfidfVectorizer(max_features=max_features, min_df=5, max_df=0.9)
+    X_text = vectorizer.fit_transform(df['text']).toarray()
+
+    X = np.hstack([symptom_arr, X_text])
+    print(f"特征维度: {X.shape[1]} (症状{len(symptoms)} + TF-IDF{max_features})")
+
+    y = df['diagnosis']
+    le = LabelEncoder()
+    y = le.fit_transform(y)
+    num_classes = len(le.classes_)
+    print("诊断类别数:", num_classes)
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    return (X_train, y_train), (X_test, y_test), le, vectorizer, num_classes
+
+class LogisticRegressionModel(nn.Module):
+    def __init__(self, input_dim, num_classes):
+        super().__init__()
+        self.linear = nn.Linear(input_dim, num_classes)
+    def forward(self, x):
+        return self.linear(x)
+
+def client_train(model, optimizer, dataloader, epochs=5, device='cpu'):
+    model.train()
+    criterion = nn.CrossEntropyLoss()
+    for epoch in range(epochs):
+        for X_batch, y_batch in dataloader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            optimizer.zero_grad()
+            loss = criterion(model(X_batch), y_batch)
+            loss.backward()
+            optimizer.step()
+    return model.state_dict()
+
+def server_aggregate(global_model, client_models, client_weights):
+    global_dict = global_model.state_dict()
+    total = sum(client_weights)
+    for key in global_dict:
+        global_dict[key] = sum(w * client_models[i][key] for i, w in enumerate(client_weights)) / total
+    global_model.load_state_dict(global_dict)
+    return global_model
+
+def evaluate(model, dataloader, device='cpu'):
+    model.eval()
+    correct = total = 0
+    with torch.no_grad():
+        for X_batch, y_batch in dataloader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            pred = model(X_batch).argmax(1)
+            total += y_batch.size(0)
+            correct += (pred == y_batch).sum().item()
+    return correct / total
+
+def split_data_to_clients(X_train, y_train, num_clients=5):
+    indices = np.random.permutation(len(X_train))
+    client_datasets = []
+    data_per_client = len(X_train) // num_clients
+    for i in range(num_clients):
+        start = i * data_per_client
+        end = (i+1)*data_per_client if i < num_clients-1 else len(X_train)
+        client_indices = indices[start:end]
+        client_datasets.append((X_train[client_indices], y_train[client_indices]))
+    return client_datasets
+
+def main():
+    # ========== 可调参数 ==========
+    data_path = "fake_emr_50000.csv"
+    max_features = 100     # 300 或 200
+    num_clients = 5
+    num_rounds = 80          # 70 或 60
+    local_epochs = 5          # 5 或 4
+    lr = 0.002                # 0.002 或 0.0025
+    batch_size = 256
+    # ============================
+
+    (X_train, y_train), (X_test, y_test), _, _, num_classes = load_and_preprocess(data_path, max_features)
+
+    # 集中式逻辑回归
+    print("\n===== 集中式逻辑回归 =====")
+    clf = LogisticRegression(max_iter=1000, multi_class='ovr', C=1.0)
+    clf.fit(X_train, y_train)
+    centralized_acc = clf.score(X_test, y_test)
+    print(f"集中式逻辑回归测试准确率: {centralized_acc:.4f}")
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    client_datasets = split_data_to_clients(X_train, y_train, num_clients)
+    client_loaders = []
+    for X_c, y_c in client_datasets:
+        loader = DataLoader(TensorDataset(torch.tensor(X_c, dtype=torch.float32),
+                                          torch.tensor(y_c, dtype=torch.long)),
+                            batch_size=batch_size, shuffle=True)
+        client_loaders.append(loader)
+
+    test_loader = DataLoader(TensorDataset(torch.tensor(X_test, dtype=torch.float32),
+                                           torch.tensor(y_test, dtype=torch.long)),
+                             batch_size=batch_size)
+
+    input_dim = X_train.shape[1]
+    global_model = LogisticRegressionModel(input_dim, num_classes).to(device)
+    total_params = sum(p.numel() * p.element_size() for p in global_model.parameters())
+    print(f"模型参数量: {total_params / 1024:.2f} KB")
+
+    best_test_acc = 0
+    for round_idx in range(num_rounds):
+        client_models = []
+        client_weights = []
+        for loader in client_loaders:
+            local_model = LogisticRegressionModel(input_dim, num_classes).to(device)
+            local_model.load_state_dict(global_model.state_dict())
+            optimizer = optim.SGD(local_model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+            local_state = client_train(local_model, optimizer, loader, epochs=local_epochs, device=device)
+            client_models.append(local_state)
+            client_weights.append(len(loader.dataset))
+
+        global_model = server_aggregate(global_model, client_models, client_weights)
+        test_acc = evaluate(global_model, test_loader, device)
+        if test_acc > best_test_acc:
+            best_test_acc = test_acc
+        if (round_idx+1) % 10 == 0:
+            print(f"Round {round_idx+1}: Test Acc = {test_acc:.4f}")
+
+    total_comm = total_params * 2 * num_clients * num_rounds
+    print(f"\n联邦学习最佳测试准确率: {best_test_acc:.4f}")
+    print(f"总通信开销: {total_comm / 1024 / 1024:.2f} MB")
+    print(f"集中式准确率: {centralized_acc:.4f}, 联邦学习准确率: {best_test_acc:.4f}, 差距: {centralized_acc - best_test_acc:.4f}")
+
+if __name__ == "__main__":
+    main()
