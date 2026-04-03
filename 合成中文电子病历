@@ -1,0 +1,748 @@
+import csv
+import random
+import re
+from datetime import datetime, timedelta
+
+# ===================== 1. 姓名生成 =====================
+SURNAMES = [
+    "王", "李", "张", "刘", "陈", "杨", "黄", "赵", "周", "吴",
+    "徐", "孙", "马", "朱", "胡", "林", "郭", "何", "高", "郑",
+    "罗", "梁", "谢", "宋", "唐", "许", "韩", "冯", "邓", "曹",
+    "彭", "曾", "肖", "田", "董", "潘", "袁", "蔡", "蒋", "余",
+    "杜", "叶", "程", "苏", "魏", "吕", "丁", "沈", "任", "姚",
+    "卢", "姜", "崔", "钟", "谭", "陆", "汪", "范", "金", "石",
+]
+GIVEN_NAMES = [
+    "伟", "芳", "强", "敏", "静", "涛", "丽", "军", "宁", "平",
+    "明", "华", "英", "峰", "杰", "娟", "健", "秀英", "志强", "桂兰",
+    "宇", "轩", "梓", "萱", "琪", "欣", "怡", "泽", "阳", "晨",
+    "昊", "然", "涵", "熙", "彤", "博", "文", "雅", "琳", "宁",
+    "超", "磊", "娜", "燕", "鹏", "飞", "雪", "梅", "龙", "凤",
+    "瑞", "祥", "安", "康", "思", "远", "梦", "瑶", "雨", "桐"
+]
+
+
+def generate_name():
+    surname = random.choice(SURNAMES)
+    given = random.choice(GIVEN_NAMES)
+    if random.random() < 0.3:
+        given += random.choice(GIVEN_NAMES)
+    return surname + given
+
+
+# ===================== 2. 身份证号 =====================
+AREA_CODES = [
+    "110101", "310101", "440301", "510101", "420101",
+    "330101", "320501", "120101", "500101", "210101"
+]
+
+
+def generate_id_card():
+    area = random.choice(AREA_CODES)
+    year = random.randint(1950, 2020)
+    month = random.randint(1, 12)
+    if month == 2:
+        day = random.randint(1, 28)
+    elif month in [4, 6, 9, 11]:
+        day = random.randint(1, 30)
+    else:
+        day = random.randint(1, 31)
+    birth = f"{year:04d}{month:02d}{day:02d}"
+    seq = f"{random.randint(0, 999):03d}"
+    body = area + birth + seq
+    weights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2]
+    check_codes = "10X98765432"
+    total = sum(int(body[i]) * weights[i] for i in range(17))
+    check = check_codes[total % 11]
+    return body + check
+
+
+# ===================== 3. 手机号 =====================
+def generate_phone():
+    second = random.choice(["3", "5", "7", "8", "9"])
+    rest = ''.join(str(random.randint(0, 9)) for _ in range(9))
+    return f"1{second}{rest}"
+
+
+# ===================== 4. 医保类型 =====================
+INSURANCE_TYPES = ["职工医保", "居民医保", "新农合", "城镇医保", "省医保", "市医保"]
+
+
+def generate_insurance():
+    return random.choice(INSURANCE_TYPES)
+
+
+# ===================== 5. 病历文本生成（原有模板）======================
+AGES = list(range(0, 111))
+GENDERS = ["男", "女"]
+
+COMPLAINT_TEMPLATES = [
+    "反复{症状}{时长}",
+    "{症状}伴{症状}{时长}，加重{时长}",
+    "{症状}{时长}，无{症状}",
+    "间断{症状}{时长}",
+    "{症状}后{症状}{时长}",
+]
+SYMPTOMS = ["咳嗽", "发热", "胸闷", "胸痛", "头痛", "头晕", "腹痛", "腹泻", "恶心", "呕吐", "关节痛", "乏力", "心悸",
+            "气短"]
+DURATIONS = ["1天", "2天", "3天", "5天", "1周", "2周", "1月", "3月"]
+
+PRESENT_TEMPLATES = [
+    "患者{时长}前无明显诱因出现{症状}，呈{性质}，{加重因素}后加重，{缓解因素}后可缓解。发病以来，{一般情况}。",
+    "患者于{时长}前因{诱因}出现{症状}，当时未予特殊处理。{时长}前症状加重，伴{症状}。",
+    "患者{时长}来反复{症状}，曾在{医院}就诊，予{药物}治疗，效果{效果}。今日为求进一步诊治来我院。",
+]
+PROPERTIES = ["阵发性", "持续性", "间歇性", "进行性加重"]
+AGGRAVATORS = ["活动", "劳累", "情绪激动", "受凉", "进食后"]
+RELIEVERS = ["休息", "含服药物", "平卧", "改变体位"]
+GENERAL = ["精神可", "精神萎靡", "食欲减退", "睡眠差", "二便无殊", "体重无明显变化"]
+HOSPITALS = ["当地医院", "社区卫生中心", "区人民医院", "市立医院"]
+DRUGS = ["布洛芬", "阿莫西林", "止咳糖浆", "感冒冲剂", "氨氯地平", "二甲双胍"]
+EFFECTS = ["不佳", "一般", "明显好转", "无效"]
+
+PAST_TEMPLATES = [
+    "既往体健，否认高血压、糖尿病、心脏病史。",
+    "高血压病史{year}年，最高{pressure}mmHg，规律服用{药物}，血压控制{控制}。",
+    "2型糖尿病史{year}年，口服{药物}，血糖控制{控制}。",
+    "冠心病史{year}年，曾行{手术}。",
+    "否认手术外伤史，否认药物过敏史。",
+]
+YEARS = ["2", "5", "8", "10", "15", "20"]
+PRESSURES = ["140/90", "150/95", "160/100", "130/85"]
+DRUGS_HT = ["氨氯地平", "硝苯地平", "厄贝沙坦", "倍他乐克"]
+DRUGS_DM = ["二甲双胍", "格列美脲", "阿卡波糖"]
+CONTROLS = ["良好", "一般", "欠佳", "尚可"]
+SURGERIES = ["冠脉支架植入", "冠脉搭桥", "起搏器植入"]
+
+PHYSICAL_TEMPLATES = [
+    "T {t}℃， P {p}次/分， R {r}次/分， BP {bp}mmHg。双肺呼吸音清，未闻及干湿性啰音。心率{p}次/分，律齐，各瓣膜听诊区未闻及病理性杂音。",
+    "T {t}℃， P {p}次/分， R {r}次/分， BP {bp}mmHg。神志清，精神可，咽部充血，双肺呼吸音粗，可闻及散在湿啰音。",
+    "T {t}℃， P {p}次/分， R {r}次/分， BP {bp}mmHg。腹平软，无压痛，肝脾肋下未及，双下肢无水肿。",
+]
+TEMPS = [36.0, 36.2, 36.5, 36.8, 37.0, 37.5, 38.0, 38.5]
+PULSES = list(range(60, 111, 2))
+RESPS = list(range(12, 25))
+BPS = ["120/80", "125/85", "130/90", "135/85", "140/90", "145/95"]
+
+EXAM_TEMPLATES = [
+    "血常规：WBC {wbc}×10⁹/L，N {n}%，Hb {hb}g/L，PLT {plt}×10⁹/L。",
+    "心电图：窦性心律，{ecg}。",
+    "胸部CT：{ct}。",
+    "血糖：{glu}mmol/L。",
+    "肝功能：ALT {alt}U/L，AST {ast}U/L。",
+]
+WBC = [5.0, 6.2, 7.8, 8.5, 10.2, 12.0]
+N = [55, 60, 65, 70, 75, 80]
+HB = [120, 130, 135, 140, 145, 150]
+PLT = [150, 180, 200, 220, 250]
+ECG = ["正常", "ST-T改变", "房性早搏", "室性早搏", "左室高电压"]
+CT = ["未见明显异常", "肺纹理增粗", "右下肺结节", "胸腔少量积液"]
+GLU = [4.5, 5.2, 6.1, 7.5, 8.9, 11.2]
+ALT = [20, 25, 30, 40, 50, 80]
+AST = [22, 28, 35, 45, 55, 70]
+
+# 扩展诊断列表
+DIAGNOSES = [
+    "急性上呼吸道感染", "急性支气管炎", "肺炎", "高血压病", "2型糖尿病", "冠心病",
+    "不稳定型心绞痛", "慢性胃炎", "急性胃肠炎", "脑梗死", "偏头痛", "腰椎间盘突出",
+    "类风湿关节炎", "焦虑状态", "心律失常", "心力衰竭", "慢性阻塞性肺疾病",
+    # 新增常见病症
+    "过敏性鼻炎", "哮喘", "胃食管反流病", "尿路感染", "肾结石", "胆囊结石",
+    "甲状腺功能亢进症", "甲状腺功能减退症", "骨质疏松", "痛风", "带状疱疹",
+    "抑郁症", "睡眠障碍", "湿疹", "荨麻疹", "中耳炎", "结膜炎", "扁桃体炎",
+    "阑尾炎", "胰腺炎", "肝炎", "贫血", "低钾血症", "高脂血症"
+]
+
+TREATMENT_TEMPLATES = [
+    "1. 药物治疗：{drugs}。2. 健康指导：{advice}。3. 随诊：{followup}。",
+    "1. 收住{dept}进一步诊治。2. 急诊留观期间予{emergency}。3. 门诊随诊。",
+    "1. 完善相关检查：{exams_suggest}。2. 暂予{therapy}。3. 不适随诊。",
+]
+DRUGS_LIST = ["阿莫西林", "头孢克肟", "阿奇霉素", "氨氯地平", "二甲双胍", "阿司匹林", "氯吡格雷", "布洛芬", "奥美拉唑"]
+ADVICES = ["低盐低脂饮食", "戒烟限酒", "规律运动", "监测血压血糖", "注意休息", "多饮水"]
+FOLLOWUPS = ["1周后复查", "2周后门诊复诊", "1月后复诊", "如症状加重及时就诊"]
+DEPTS = ["心血管内科", "呼吸内科", "消化内科", "神经内科", "内分泌科"]
+EMERGENCY = ["吸氧", "心电监护", "建立静脉通路", "硝酸甘油泵入"]
+EXAMS_SUGGEST = ["血常规+CRP", "心电图", "胸部CT", "心脏超声", "胃镜"]
+THERAPIES = ["对症支持治疗", "抗感染", "降压", "降糖", "抗血小板聚集"]
+
+
+def random_choice(lst):
+    return random.choice(lst)
+
+
+def generate_chief_complaint():
+    template = random_choice(COMPLAINT_TEMPLATES)
+    if "{症状}" in template:
+        s1 = random_choice(SYMPTOMS)
+        s2 = random_choice(SYMPTOMS)
+        template = template.replace("{症状}", s1, 1)
+        if "{症状}" in template:
+            template = template.replace("{症状}", s2, 1)
+    if "{时长}" in template:
+        d = random_choice(DURATIONS)
+        template = template.replace("{时长}", d)
+        if "{时长}" in template:
+            template = template.replace("{时长}", random_choice(DURATIONS))
+    return template
+
+
+def generate_present_illness():
+    template = random_choice(PRESENT_TEMPLATES)
+    for key, vals in [
+        ("{时长}", DURATIONS), ("{症状}", SYMPTOMS), ("{性质}", PROPERTIES),
+        ("{加重因素}", AGGRAVATORS), ("{缓解因素}", RELIEVERS), ("{一般情况}", GENERAL),
+        ("{诱因}", ["受凉", "劳累", "情绪激动", "饮食不当"]), ("{医院}", HOSPITALS),
+        ("{药物}", DRUGS), ("{效果}", EFFECTS)
+    ]:
+        while key in template:
+            template = template.replace(key, random_choice(vals), 1)
+    return template
+
+
+def generate_past_history():
+    hist = []
+    if random.random() < 0.7:
+        template = random_choice(PAST_TEMPLATES)
+        if "{year}" in template:
+            template = template.replace("{year}", random_choice(YEARS))
+        if "{pressure}" in template:
+            template = template.replace("{pressure}", random_choice(PRESSURES))
+        if "{药物}" in template:
+            template = template.replace("{药物}", random_choice(DRUGS_HT if "高血压" in template else DRUGS_DM))
+        if "{控制}" in template:
+            template = template.replace("{控制}", random_choice(CONTROLS))
+        if "{手术}" in template:
+            template = template.replace("{手术}", random_choice(SURGERIES))
+        hist.append(template)
+    if random.random() < 0.1:
+        hist.append("否认药物过敏史。" if random.random() < 0.5 else "青霉素过敏史。")
+    if not hist:
+        hist.append("既往体健。")
+    return " ".join(hist)
+
+
+def generate_physical_exam():
+    template = random_choice(PHYSICAL_TEMPLATES)
+    t = random_choice(TEMPS)
+    p = random_choice(PULSES)
+    r = random_choice(RESPS)
+    bp = random_choice(BPS)
+    template = template.replace("{t}", f"{t:.1f}")
+    template = template.replace("{p}", str(p))
+    template = template.replace("{r}", str(r))
+    template = template.replace("{bp}", bp)
+    return template
+
+
+def generate_exams():
+    num = random.randint(1, 3)
+    exams = []
+    for _ in range(num):
+        template = random_choice(EXAM_TEMPLATES)
+        if "WBC" in template:
+            template = template.replace("{wbc}", f"{random_choice(WBC):.1f}")
+            template = template.replace("{n}", str(random_choice(N)))
+            template = template.replace("{hb}", str(random_choice(HB)))
+            template = template.replace("{plt}", str(random_choice(PLT)))
+        if "{ecg}" in template:
+            template = template.replace("{ecg}", random_choice(ECG))
+        if "{ct}" in template:
+            template = template.replace("{ct}", random_choice(CT))
+        if "{glu}" in template:
+            template = template.replace("{glu}", f"{random_choice(GLU):.1f}")
+        if "{alt}" in template:
+            template = template.replace("{alt}", str(random_choice(ALT)))
+            template = template.replace("{ast}", str(random_choice(AST)))
+        exams.append(template)
+    return " ".join(exams)
+
+
+def generate_treatment():
+    template = random_choice(TREATMENT_TEMPLATES)
+    if "{drugs}" in template:
+        drugs = random.sample(DRUGS_LIST, random.randint(1, 3))
+        template = template.replace("{drugs}", "、".join(drugs))
+    if "{advice}" in template:
+        advice = random.sample(ADVICES, random.randint(1, 2))
+        template = template.replace("{advice}", "；".join(advice))
+    if "{followup}" in template:
+        template = template.replace("{followup}", random_choice(FOLLOWUPS))
+    if "{dept}" in template:
+        template = template.replace("{dept}", random_choice(DEPTS))
+    if "{emergency}" in template:
+        emerg = random.sample(EMERGENCY, random.randint(1, 2))
+        template = template.replace("{emergency}", "、".join(emerg))
+    if "{exams_suggest}" in template:
+        exams_sug = random.sample(EXAMS_SUGGEST, random.randint(1, 2))
+        template = template.replace("{exams_suggest}", "、".join(exams_sug))
+    if "{therapy}" in template:
+        template = template.replace("{therapy}", random_choice(THERAPIES))
+    return template
+
+
+def generate_visit_time(start_date, end_date):
+    delta = end_date - start_date
+    random_days = random.randint(0, delta.days)
+    random_seconds = random.randint(0, 86400)
+    return start_date + timedelta(days=random_days, seconds=random_seconds)
+
+
+# ===================== 诊断规则匹配 =====================
+def extract_vitals_from_text(physical_exam):
+    """从体格检查文本中提取生命体征数值"""
+    vitals = {}
+    t_match = re.search(r'T\s*([\d.]+)', physical_exam)
+    if t_match:
+        vitals['temperature'] = float(t_match.group(1))
+    p_match = re.search(r'P\s*(\d+)', physical_exam)
+    if p_match:
+        vitals['pulse'] = int(p_match.group(1))
+    r_match = re.search(r'R\s*(\d+)', physical_exam)
+    if r_match:
+        vitals['respiratory'] = int(r_match.group(1))
+    bp_match = re.search(r'BP\s*(\d+)/(\d+)', physical_exam)
+    if bp_match:
+        vitals['systolic_bp'] = int(bp_match.group(1))
+        vitals['diastolic_bp'] = int(bp_match.group(2))
+    return vitals
+
+
+def extract_exam_keywords(exams):
+    """从辅助检查中提取关键词，例如血糖、CT 表现等"""
+    keywords = []
+    # 血糖
+    glu_match = re.search(r'血糖[：:]\s*([\d.]+)', exams)
+    if glu_match:
+        glu = float(glu_match.group(1))
+        keywords.append(('glucose', glu))
+    # 尿酸
+    ua_match = re.search(r'尿酸[：:]\s*(\d+)', exams)
+    if ua_match:
+        keywords.append(('uric_acid', int(ua_match.group(1))))
+    # 甲状腺功能
+    tsh_match = re.search(r'TSH[：:]\s*([\d.]+)', exams)
+    if tsh_match:
+        keywords.append(('TSH', float(tsh_match.group(1))))
+    ft3_match = re.search(r'FT3[：:]\s*([\d.]+)', exams)
+    if ft3_match:
+        keywords.append(('FT3', float(ft3_match.group(1))))
+    # 肝功
+    alt_match = re.search(r'ALT\s*(\d+)', exams)
+    if alt_match:
+        keywords.append(('ALT', int(alt_match.group(1))))
+    # 血常规
+    hb_match = re.search(r'Hb\s*(\d+)', exams)
+    if hb_match:
+        keywords.append(('hemoglobin', int(hb_match.group(1))))
+    # 血脂
+    chol_match = re.search(r'总胆固醇[：:]\s*([\d.]+)', exams)
+    if chol_match:
+        keywords.append(('cholesterol', float(chol_match.group(1))))
+    tg_match = re.search(r'甘油三酯[：:]\s*([\d.]+)', exams)
+    if tg_match:
+        keywords.append(('triglyceride', float(tg_match.group(1))))
+    # 影像学关键词
+    if '肺纹理增粗' in exams or '湿啰音' in exams:
+        keywords.append('lung_infiltration')
+    if '结节' in exams:
+        keywords.append('nodule')
+    if 'ST-T改变' in exams or '心律失常' in exams:
+        keywords.append('ecg_abnormal')
+    if 'B超见胆囊结石' in exams:
+        keywords.append('gallstone')
+    if 'B超见肾结石' in exams:
+        keywords.append('kidney_stone')
+    return keywords
+
+
+# 诊断规则（扩展版）
+DIAGNOSIS_RULES = {
+    '急性上呼吸道感染': {
+        'symptoms': ['咳嗽', '发热', '咽痛', '鼻塞'],
+        'min_symptoms': 2,
+        'vitals': {'temperature': (37.5, 39.0)},
+        'weight': 1.0
+    },
+    '急性支气管炎': {
+        'symptoms': ['咳嗽', '咳痰', '胸闷'],
+        'min_symptoms': 2,
+        'vitals': {'temperature': (37.0, 38.5)},
+        'exam_keywords': ['肺纹理增粗'],
+        'weight': 1.0
+    },
+    '肺炎': {
+        'symptoms': ['发热', '咳嗽', '胸痛', '呼吸困难'],
+        'min_symptoms': 2,
+        'vitals': {'temperature': (38.0, 40.0)},
+        'exam_keywords': ['湿啰音', '肺纹理增粗', '结节'],
+        'weight': 1.2
+    },
+    '高血压病': {
+        'symptoms': ['头痛', '头晕', '心悸'],
+        'min_symptoms': 1,
+        'vitals': {'systolic_bp': (140, 200), 'diastolic_bp': (90, 120)},
+        'past_history': ['高血压病史'],
+        'weight': 1.0
+    },
+    '2型糖尿病': {
+        'symptoms': ['乏力', '口干', '多饮'],
+        'min_symptoms': 1,
+        'exam_keywords': [('glucose', 7.0, float('inf'))],
+        'past_history': ['糖尿病史'],
+        'weight': 1.0
+    },
+    '冠心病': {
+        'symptoms': ['胸痛', '胸闷', '心悸'],
+        'min_symptoms': 2,
+        'vitals': {'pulse': (90, 120)},
+        'exam_keywords': ['ST-T改变', '心律失常'],
+        'past_history': ['冠心病史'],
+        'weight': 1.0
+    },
+    '慢性胃炎': {
+        'symptoms': ['腹痛', '恶心', '呕吐', '腹胀'],
+        'min_symptoms': 2,
+        'weight': 1.0
+    },
+    '急性胃肠炎': {
+        'symptoms': ['腹痛', '腹泻', '恶心', '呕吐'],
+        'min_symptoms': 2,
+        'vitals': {'temperature': (37.0, 38.5)},
+        'weight': 1.0
+    },
+    '脑梗死': {
+        'symptoms': ['头痛', '头晕', '肢体麻木', '言语不清'],
+        'min_symptoms': 2,
+        'past_history': ['脑梗死', '高血压病史'],
+        'weight': 1.0
+    },
+    '偏头痛': {
+        'symptoms': ['头痛', '恶心', '畏光'],
+        'min_symptoms': 2,
+        'weight': 1.0
+    },
+    '类风湿关节炎': {
+        'symptoms': ['关节痛', '关节肿胀', '晨僵'],
+        'min_symptoms': 2,
+        'weight': 1.0
+    },
+    '心律失常': {
+        'symptoms': ['心悸', '胸闷', '头晕'],
+        'min_symptoms': 2,
+        'exam_keywords': ['心律失常'],
+        'vitals': {'pulse': (100, 150)},
+        'weight': 1.0
+    },
+    '心力衰竭': {
+        'symptoms': ['呼吸困难', '乏力', '水肿'],
+        'min_symptoms': 2,
+        'exam_keywords': ['心脏超声异常'],
+        'vitals': {'pulse': (100, 130)},
+        'weight': 1.0
+    },
+    '慢性阻塞性肺疾病': {
+        'symptoms': ['咳嗽', '咳痰', '呼吸困难'],
+        'min_symptoms': 2,
+        'past_history': ['COPD', '慢阻肺'],
+        'weight': 1.0
+    },
+    '过敏性鼻炎': {
+        'symptoms': ['打喷嚏', '流清涕', '鼻塞', '鼻痒'],
+        'min_symptoms': 2,
+        'weight': 1.0
+    },
+    '哮喘': {
+        'symptoms': ['喘息', '呼吸困难', '胸闷', '咳嗽'],
+        'min_symptoms': 2,
+        'exam_keywords': ['哮鸣音', '支气管激发试验阳性'],
+        'weight': 1.0
+    },
+    '胃食管反流病': {
+        'symptoms': ['反酸', '烧心', '胸骨后疼痛', '嗳气'],
+        'min_symptoms': 2,
+        'weight': 1.0
+    },
+    '尿路感染': {
+        'symptoms': ['尿频', '尿急', '尿痛', '腰痛'],
+        'min_symptoms': 2,
+        'exam_keywords': ['尿白细胞升高', '尿亚硝酸盐阳性'],
+        'vitals': {'temperature': (37.5, 39.0)},
+        'weight': 1.0
+    },
+    '肾结石': {
+        'symptoms': ['腰痛', '血尿', '排尿困难', '恶心'],
+        'min_symptoms': 2,
+        'exam_keywords': ['B超见肾结石', 'CT见高密度影'],
+        'weight': 1.0
+    },
+    '胆囊结石': {
+        'symptoms': ['右上腹痛', '恶心', '呕吐', '发热'],
+        'min_symptoms': 2,
+        'exam_keywords': ['B超见胆囊结石', '胆囊壁增厚'],
+        'weight': 1.0
+    },
+    '甲状腺功能亢进症': {
+        'symptoms': ['心悸', '多汗', '手抖', '消瘦', '易怒'],
+        'min_symptoms': 2,
+        'exam_keywords': [('TSH', 0, 0.3), ('FT3', 7.0, 20.0)],
+        'vitals': {'pulse': (100, 140)},
+        'weight': 1.0
+    },
+    '甲状腺功能减退症': {
+        'symptoms': ['乏力', '怕冷', '体重增加', '便秘', '记忆力减退'],
+        'min_symptoms': 2,
+        'exam_keywords': [('TSH', 4.5, 100.0)],
+        'weight': 1.0
+    },
+    '骨质疏松': {
+        'symptoms': ['腰背痛', '身高变矮', '驼背', '骨折'],
+        'min_symptoms': 2,
+        'exam_keywords': ['骨密度T值<-2.5'],
+        'past_history': ['骨质疏松病史'],
+        'weight': 1.0
+    },
+    '痛风': {
+        'symptoms': ['关节红肿', '剧痛', '第一跖趾关节', '发热'],
+        'min_symptoms': 2,
+        'exam_keywords': [('uric_acid', 420, 1000)],
+        'weight': 1.0
+    },
+    '带状疱疹': {
+        'symptoms': ['皮疹', '水疱', '疼痛', '烧灼感'],
+        'min_symptoms': 2,
+        'weight': 1.0
+    },
+    '抑郁症': {
+        'symptoms': ['情绪低落', '兴趣减退', '失眠', '乏力', '自责'],
+        'min_symptoms': 2,
+        'weight': 1.0
+    },
+    '睡眠障碍': {
+        'symptoms': ['入睡困难', '早醒', '多梦', '白天困倦'],
+        'min_symptoms': 2,
+        'weight': 1.0
+    },
+    '湿疹': {
+        'symptoms': ['皮疹', '瘙痒', '红斑', '渗出'],
+        'min_symptoms': 2,
+        'weight': 1.0
+    },
+    '荨麻疹': {
+        'symptoms': ['风团', '瘙痒', '血管性水肿'],
+        'min_symptoms': 2,
+        'weight': 1.0
+    },
+    '中耳炎': {
+        'symptoms': ['耳痛', '耳流脓', '听力下降', '发热'],
+        'min_symptoms': 2,
+        'exam_keywords': ['鼓膜充血', '穿孔'],
+        'weight': 1.0
+    },
+    '结膜炎': {
+        'symptoms': ['眼红', '眼痒', '分泌物增多', '畏光'],
+        'min_symptoms': 2,
+        'weight': 1.0
+    },
+    '扁桃体炎': {
+        'symptoms': ['咽痛', '发热', '吞咽困难', '扁桃体肿大'],
+        'min_symptoms': 2,
+        'vitals': {'temperature': (38.0, 40.0)},
+        'weight': 1.0
+    },
+    '阑尾炎': {
+        'symptoms': ['转移性右下腹痛', '恶心', '呕吐', '发热'],
+        'min_symptoms': 2,
+        'exam_keywords': ['麦氏点压痛', '反跳痛'],
+        'vitals': {'temperature': (37.5, 39.0)},
+        'weight': 1.0
+    },
+    '胰腺炎': {
+        'symptoms': ['上腹痛', '恶心', '呕吐', '腹胀', '发热'],
+        'min_symptoms': 2,
+        'exam_keywords': ['血淀粉酶升高', '脂肪酶升高'],
+        'vitals': {'temperature': (37.5, 39.0)},
+        'weight': 1.0
+    },
+    '肝炎': {
+        'symptoms': ['乏力', '食欲减退', '黄疸', '肝区不适'],
+        'min_symptoms': 2,
+        'exam_keywords': [('ALT', 40, 1000)],
+        'weight': 1.0
+    },
+    '贫血': {
+        'symptoms': ['乏力', '头晕', '面色苍白', '心悸'],
+        'min_symptoms': 2,
+        'exam_keywords': [('hemoglobin', 0, 110)],
+        'weight': 1.0
+    },
+    '低钾血症': {
+        'symptoms': ['肌无力', '腹胀', '心律失常', '乏力'],
+        'min_symptoms': 2,
+        'exam_keywords': [('血钾', 0, 3.5)],
+        'weight': 1.0
+    },
+    '高脂血症': {
+        'symptoms': ['头晕', '乏力', '黄色瘤', '肥胖'],
+        'min_symptoms': 1,
+        'exam_keywords': [('cholesterol', 5.7, 20.0), ('triglyceride', 1.7, 20.0)],
+        'weight': 1.0
+    }
+}
+
+
+def match_diagnosis(chief_complaint, present_illness, physical_exam, exams, past_history):
+    """
+    根据病历文本匹配最合适的诊断
+    返回诊断名称及匹配得分
+    """
+    text = (chief_complaint + present_illness + physical_exam + exams + past_history).lower()
+    vitals = extract_vitals_from_text(physical_exam)
+    exam_keywords = extract_exam_keywords(exams)
+
+    scores = {}
+    for diag, rules in DIAGNOSIS_RULES.items():
+        score = 0
+        # 症状匹配
+        if 'symptoms' in rules:
+            symptom_matches = sum(1 for sym in rules['symptoms'] if sym in text)
+            if symptom_matches >= rules.get('min_symptoms', 1):
+                score += symptom_matches
+        # 生命体征匹配
+        if 'vitals' in rules:
+            for vital, (low, high) in rules['vitals'].items():
+                if vital in vitals and low <= vitals[vital] <= high:
+                    score += 1
+        # 检查结果匹配
+        if 'exam_keywords' in rules:
+            for kw in rules['exam_keywords']:
+                if isinstance(kw, tuple):  # 数值型条件
+                    key, low, high = kw
+                    for ek in exam_keywords:
+                        if isinstance(ek, tuple) and ek[0] == key and low <= ek[1] <= high:
+                            score += 1
+                            break
+                else:  # 字符串关键词
+                    if kw in text:
+                        score += 1
+        # 既往史匹配
+        if 'past_history' in rules:
+            for ph in rules['past_history']:
+                if ph in text:
+                    score += 1
+
+        if score > 0:
+            scores[diag] = score * rules.get('weight', 1.0)
+
+    if scores:
+        best = max(scores, key=scores.get)
+        return best, scores[best]
+    else:
+        return random.choice(DIAGNOSES), 0
+
+
+# ===================== 诊断-治疗映射 =====================
+DIAGNOSIS_TREATMENT_MAP = {
+    '过敏性鼻炎': '抗组胺药（氯雷他定）、鼻用糖皮质激素',
+    '哮喘': '支气管扩张剂（沙丁胺醇）、吸入糖皮质激素',
+    '胃食管反流病': '质子泵抑制剂（奥美拉唑）、促胃肠动力药',
+    '尿路感染': '抗生素（左氧氟沙星）、多饮水',
+    '肾结石': '解痉镇痛药、体外冲击波碎石、多饮水',
+    '胆囊结石': '腹腔镜胆囊切除术、消炎利胆片',
+    '甲状腺功能亢进症': '甲巯咪唑、β受体阻滞剂',
+    '甲状腺功能减退症': '左甲状腺素钠片',
+    '骨质疏松': '钙剂、维生素D、双膦酸盐',
+    '痛风': '非甾体抗炎药（布洛芬）、秋水仙碱、降尿酸药',
+    '带状疱疹': '抗病毒药（阿昔洛韦）、止痛药',
+    '抑郁症': '选择性5-羟色胺再摄取抑制剂（舍曲林）、心理治疗',
+    '睡眠障碍': '短效苯二氮䓬类药物、褪黑素、睡眠卫生教育',
+    '湿疹': '外用糖皮质激素、保湿剂',
+    '荨麻疹': '抗组胺药（西替利嗪）、炉甘石洗剂',
+    '中耳炎': '抗生素（阿莫西林）、止痛药',
+    '结膜炎': '抗过敏眼药水、人工泪液',
+    '扁桃体炎': '抗生素（青霉素）、退热药',
+    '阑尾炎': '阑尾切除术、抗生素',
+    '胰腺炎': '禁食、胃肠减压、生长抑素',
+    '肝炎': '保肝药（水飞蓟素）、抗病毒治疗',
+    '贫血': '补充铁剂、维生素B12、叶酸',
+    '低钾血症': '口服/静脉补钾',
+    '高脂血症': '他汀类药物、饮食控制'
+}
+
+
+def generate_treatment_with_diagnosis(diagnosis):
+    """根据诊断生成个性化治疗"""
+    base = generate_treatment()  # 原有随机治疗
+    if diagnosis in DIAGNOSIS_TREATMENT_MAP:
+        specific = DIAGNOSIS_TREATMENT_MAP[diagnosis]
+        return base + f" 针对{diagnosis}，建议：{specific}。"
+    else:
+        return base
+
+
+# ===================== 主生成函数 =====================
+def generate_fake_emr_with_logic(patient_id, start_date, end_date, random_diagnosis_rate=0.2):
+    """
+    生成一条完整的电子病历，诊断与文本内容逻辑关联
+    random_diagnosis_rate: 随机诊断的比例（增加数据多样性）
+    """
+    chief = generate_chief_complaint()
+    present = generate_present_illness()
+    past = generate_past_history()
+    physical = generate_physical_exam()
+    exams = generate_exams()
+
+    if random.random() < random_diagnosis_rate:
+        diagnosis = random.choice(DIAGNOSES)
+    else:
+        diagnosis, _ = match_diagnosis(chief, present, physical, exams, past)
+
+    treatment = generate_treatment_with_diagnosis(diagnosis)
+
+    return {
+        "patient_id": patient_id,
+        "name": generate_name(),
+        "id_card": generate_id_card(),
+        "phone": generate_phone(),
+        "insurance": generate_insurance(),
+        "age": random_choice(AGES),
+        "gender": random_choice(GENDERS),
+        "chief_complaint": chief,
+        "present_illness": present,
+        "past_history": past,
+        "physical_exam": physical,
+        "exams": exams,
+        "diagnosis": diagnosis,
+        "treatment": treatment,
+        "visit_time": generate_visit_time(start_date, end_date).strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def main():
+    start_date = datetime(2025, 4, 1)
+    end_date = datetime(2026, 3, 31)
+    total_records = 50000
+    random_diagnosis_rate = 0.2  # 20% 随机诊断，增加真实感
+
+    fieldnames = [
+        "patient_id", "name", "id_card", "phone", "insurance",
+        "age", "gender", "chief_complaint", "present_illness",
+        "past_history", "physical_exam", "exams", "diagnosis",
+        "treatment", "visit_time"
+    ]
+
+    output_file = "fake_emr_50000.csv"
+    with open(output_file, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for i in range(total_records):
+            pid = f"P{i + 1:06d}"
+            row = generate_fake_emr_with_logic(pid, start_date, end_date, random_diagnosis_rate)
+            writer.writerow(row)
+            if (i + 1) % 1000 == 0:
+                print(f"已生成 {i + 1} 条记录...")
+    print(f"生成完成！文件：{output_file}")
+
+
+if __name__ == "__main__":
+    main()
