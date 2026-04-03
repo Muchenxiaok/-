@@ -1,0 +1,210 @@
+# -*- coding: utf-8 -*-
+"""
+联邦学习隐私保护处理
+
+"""
+
+import pandas as pd
+import numpy as np
+import re
+from sklearn.model_selection import StratifiedShuffleSplit
+
+# ========================= 1. 加载数据 =========================
+df = pd.read_csv('fake_emr_50000_deid.csv')
+df.drop('patient_id', axis=1, inplace=True)
+
+# 时间泛化（月 → 季度）
+df['visit_quarter'] = pd.to_datetime(df['visit_month']).dt.to_period('Q').astype(str)
+df.drop('visit_month', axis=1, inplace=True)
+
+# ========================= 2. 提取数值特征并加噪（含缺失值处理） =========================
+def extract_number(text, pattern):
+    if not isinstance(text, str):
+        return np.nan
+    match = re.search(pattern, text)
+    return float(match.group(1)) if match else np.nan
+
+def add_laplace_noise(series, epsilon=0.5, sensitivity=1.0):
+    noise = np.random.laplace(0, sensitivity/epsilon, len(series))
+    return series + noise
+
+# 2.1 生命体征提取
+df['temperature'] = extract_number(df['physical_exam'], r'T\s+(\d+\.?\d*)')
+df['pulse'] = extract_number(df['physical_exam'], r'P\s+(\d+)')
+df['respiration'] = extract_number(df['physical_exam'], r'R\s+(\d+)')
+df['bp_systolic'] = extract_number(df['physical_exam'], r'BP\s+(\d+)/')
+df['bp_diastolic'] = extract_number(df['physical_exam'], r'BP\s+\d+/(\d+)')
+
+# 2.2 化验值提取
+df['ALT'] = extract_number(df['exams'], r'ALT\s+(\d+)')
+df['AST'] = extract_number(df['exams'], r'AST\s+(\d+)')
+df['glucose'] = extract_number(df['exams'], r'(\d+\.?\d*)\s*mmol/L')
+df['WBC'] = extract_number(df['exams'], r'WBC\s+(\d+\.?\d*)')
+df['N_percent'] = extract_number(df['exams'], r'N\s+(\d+)%')
+df['Hb'] = extract_number(df['exams'], r'Hb\s+(\d+)')
+df['PLT'] = extract_number(df['exams'], r'PLT\s+(\d+)')
+
+# 需要处理的数值列列表
+num_cols = ['temperature', 'pulse', 'respiration', 'bp_systolic', 'bp_diastolic',
+            'ALT', 'AST', 'glucose', 'WBC', 'N_percent', 'Hb', 'PLT']
+
+# 缺失值填充：使用各列中位数，若全为空则填充全局默认值
+for col in num_cols:
+    if df[col].isna().all():
+        # 整列全为空，填充一个合理默认值（根据业务含义）
+        if col in ['temperature']:
+            default_val = 36.5
+        elif col in ['pulse', 'respiration', 'bp_systolic', 'bp_diastolic']:
+            default_val = 0
+        else:
+            default_val = 0
+        print(f"警告：列 {col} 全部缺失，使用默认值 {default_val} 填充")
+        df[col] = df[col].fillna(default_val)
+    else:
+        median_val = df[col].median()
+        df[col] = df[col].fillna(median_val)
+
+# 加噪（敏感度根据指标范围设定）
+df['temperature_noisy'] = add_laplace_noise(df['temperature'], epsilon=0.5, sensitivity=0.5).round(1).clip(35, 42)
+df['pulse_noisy'] = add_laplace_noise(df['pulse'], epsilon=0.5, sensitivity=10).round(0).clip(30, 200)
+df['respiration_noisy'] = add_laplace_noise(df['respiration'], epsilon=0.5, sensitivity=5).round(0).clip(5, 40)
+df['bp_systolic_noisy'] = add_laplace_noise(df['bp_systolic'], epsilon=0.5, sensitivity=10).round(0).clip(50, 250)
+df['bp_diastolic_noisy'] = add_laplace_noise(df['bp_diastolic'], epsilon=0.5, sensitivity=10).round(0).clip(30, 150)
+df['ALT_noisy'] = add_laplace_noise(df['ALT'], epsilon=0.5, sensitivity=20).round(0).clip(0, 500)
+df['AST_noisy'] = add_laplace_noise(df['AST'], epsilon=0.5, sensitivity=20).round(0).clip(0, 500)
+df['glucose_noisy'] = add_laplace_noise(df['glucose'], epsilon=0.5, sensitivity=2).round(1).clip(0, 30)
+df['WBC_noisy'] = add_laplace_noise(df['WBC'], epsilon=0.5, sensitivity=5).round(1).clip(0, 50)
+df['N_percent_noisy'] = add_laplace_noise(df['N_percent'], epsilon=0.5, sensitivity=10).round(0).clip(0, 100)
+df['Hb_noisy'] = add_laplace_noise(df['Hb'], epsilon=0.5, sensitivity=15).round(0).clip(30, 200)
+df['PLT_noisy'] = add_laplace_noise(df['PLT'], epsilon=0.5, sensitivity=50).round(0).clip(0, 1000)
+
+# 删除原始数值列
+df.drop(num_cols, axis=1, inplace=True)
+
+# ========================= 3. 诊断泛化 =========================
+def generalize_diagnosis(diag):
+    if not isinstance(diag, str):
+        return '其他'
+    d = diag.lower()
+    if '糖尿病' in d:
+        return '内分泌疾病'
+    elif '高血压' in d or '冠心病' in d or '心绞痛' in d or '心律失常' in d:
+        return '心血管疾病'
+    elif '支气管炎' in d or 'copd' in d or '肺炎' in d or '哮喘' in d:
+        return '呼吸系统疾病'
+    elif '胃肠炎' in d or '胃食管反流' in d or '胃炎' in d:
+        return '消化系统疾病'
+    elif '关节炎' in d or '类风湿' in d:
+        return '风湿免疫疾病'
+    elif '甲状腺' in d:
+        return '内分泌疾病'
+    elif '感染' in d or '上呼吸道' in d or '扁桃体炎' in d or '中耳炎' in d:
+        return '感染性疾病'
+    elif '腰椎间盘突出' in d or '骨折' in d:
+        return '肌肉骨骼疾病'
+    elif '焦虑' in d or '抑郁' in d or '睡眠障碍' in d:
+        return '精神心理疾病'
+    else:
+        return '其他'
+
+df['diagnosis_general'] = df['diagnosis'].apply(generalize_diagnosis)
+df.drop('diagnosis', axis=1, inplace=True)
+
+# ========================= 4. 文本字段深度脱敏 =========================
+def deep_abstract_text(text):
+    if not isinstance(text, str):
+        return text
+    # 时间模糊
+    text = re.sub(r'\d+月前', '数月前', text)
+    text = re.sub(r'\d+天前', '数天前', text)
+    text = re.sub(r'\d+周前', '数周前', text)
+    text = re.sub(r'\d+年前', '数年前', text)
+    # 剂量/频率模糊
+    text = re.sub(r'\d+次/日', '每日多次', text)
+    text = re.sub(r'\d+mg', '某剂量', text)
+    # 药物映射
+    drug_map = {
+        '阿卡波糖': '降糖药', '二甲双胍': '降糖药', '格列美脲': '降糖药',
+        '硝苯地平': '降压药', '氨氯地平': '降压药', '倍他乐克': '降压药', '厄贝沙坦': '降压药',
+        '布洛芬': '非甾体抗炎药', '阿莫西林': '抗生素', '止咳糖浆': '止咳药',
+        '感冒冲剂': '感冒药', '左氧氟沙星': '抗生素', '他汀': '降脂药',
+        '胰岛素': '降糖药', '利尿剂': '降压药', '炉甘石洗剂': '皮肤外用药',
+        '质子泵抑制剂': '抑酸药', '促胃肠动力药': '胃肠药'
+    }
+    for drug, cls in drug_map.items():
+        text = text.replace(drug, cls)
+    # 清除所有化验数值模式
+    text = re.sub(r'ALT\s+\d+U/L', '', text, flags=re.I)
+    text = re.sub(r'AST\s+\d+U/L', '', text, flags=re.I)
+    text = re.sub(r'WBC\s+\d+\.?\d*×10⁹/L', '', text, flags=re.I)
+    text = re.sub(r'N\s+\d+%', '', text, flags=re.I)
+    text = re.sub(r'Hb\s+\d+g/L', '', text, flags=re.I)
+    text = re.sub(r'PLT\s+\d+×10⁹/L', '', text, flags=re.I)
+    text = re.sub(r'\d+\.?\d*\s*mmol/L', '', text)
+    # 移除占位符
+    text = text.replace('[姓名]', '').replace('[医院]', '医院')
+    # 清理多余空格
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+text_cols = ['chief_complaint', 'present_illness', 'past_history', 'physical_exam', 'exams', 'treatment']
+for col in text_cols:
+    df[col] = df[col].apply(deep_abstract_text)
+
+# ========================= 5. 医保类别合并 =========================
+insurance_map = {
+    '居民医保': 'Public', '新农合': 'Public',
+    '省医保': 'Occupational', '市医保': 'Occupational',
+    '城镇医保': 'Occupational', '职工医保': 'Occupational'
+}
+df['insurance'] = df['insurance'].map(insurance_map)
+
+# ========================= 6. k-匿名自动合并 =========================
+quasi_cols = ['age_group', 'insurance', 'visit_quarter']
+counts = df.groupby(quasi_cols).size().reset_index(name='count')
+small = counts[counts['count'] < 5]
+if not small.empty:
+    print("发现小分组，进行合并处理...")
+    # 合并季度到年份
+    df['year'] = df['visit_quarter'].str[:4]
+    new_quasi = ['age_group', 'insurance', 'year']
+    new_counts = df.groupby(new_quasi).size().reset_index(name='count')
+    if (new_counts['count'] < 5).any():
+        # 进一步合并年龄组
+        df['age_coarse'] = df['age_group'].replace({
+            '0-17':'青年', '18-29':'青年', '30-39':'中年', '40-49':'中年',
+            '50-59':'中老年', '60-69':'老年', '70-79':'老年', '80-89':'老年', '90+':'老年'
+        })
+        final_quasi = ['age_coarse', 'insurance', 'year']
+        final_counts = df.groupby(final_quasi).size().reset_index(name='count')
+        if (final_counts['count'] < 5).any():
+            print("警告：合并后仍有分组<5，建议删除这些记录")
+        else:
+            df['age_group'] = df['age_coarse']
+            df.drop('age_coarse', axis=1, inplace=True)
+            df.drop('year', axis=1, inplace=True)
+            quasi_cols = final_quasi
+    else:
+        df['visit_quarter'] = df['year']
+        df.drop('year', axis=1, inplace=True)
+        quasi_cols = new_quasi
+
+# ========================= 7. 联邦学习Non-IID分片 =========================
+strata_col = '_'.join(quasi_cols)
+df['strata'] = df[quasi_cols].astype(str).agg('_'.join, axis=1)
+
+clients = {}
+sss = StratifiedShuffleSplit(n_splits=5, test_size=0.2, random_state=42)
+for i, (_, client_idx) in enumerate(sss.split(df, df['strata'])):
+    clients[f'client_{i+1}'] = df.iloc[client_idx].copy()
+
+for client in clients.values():
+    client.drop('strata', axis=1, inplace=True)
+
+# 保存
+for name, data in clients.items():
+    data.to_csv(f'{name}_fl_ready.csv', index=False)
+
+print("修正版处理完成！生成文件：")
+for name in clients.keys():
+    print(f"  - {name}_fl_ready.csv")
