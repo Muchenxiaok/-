@@ -72,7 +72,7 @@ def generate_insurance():
     return random.choice(INSURANCE_TYPES)
 
 
-# ===================== 5. 病历文本生成（原有模板）======================
+# ===================== 5. 病历文本生成======================
 AGES = list(range(0, 111))
 GENDERS = ["男", "女"]
 
